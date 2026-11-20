@@ -1,9 +1,5 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Utengule–Itimba Estate | Labor Register</title>
+<script src="https://jsdelivr.net"></script>
+
 <style>
   :root{
     --bark:#2b2118;
@@ -2856,6 +2852,173 @@ function wireTab(){
 })();
 
 
+<script>
+// 1. UNIVERSAL CAMERA QR SCANNER (Works on iPhone, Android, Chrome, Safari, Firefox)
+(function() {
+  let activeStream = null;
+  let scanFrameId = null;
+  let lastCode = '';
+  let lastTime = 0;
+
+  window.stopScan = function() {
+    if (scanFrameId) cancelAnimationFrame(scanFrameId);
+    scanFrameId = null;
+    if (activeStream) {
+      activeStream.getTracks().forEach(t => t.stop());
+      activeStream = null;
+    }
+  };
+
+  window.startScan = async function() {
+    window.stopScan();
+    const panel = document.getElementById('scan-panel');
+    if (!panel) return;
+
+    // Remove the old "This browser cannot read QR codes" warning if shown
+    panel.querySelectorAll('.msg.err, p').forEach(el => {
+      if (el.textContent.includes('BarcodeDetector') || el.textContent.includes('cannot read QR')) {
+        el.style.display = 'none';
+      }
+    });
+
+    let video = panel.querySelector('video');
+    if (!video) {
+      video = document.createElement('video');
+      video.setAttribute('playsinline', 'true');
+      video.muted = true;
+      panel.prepend(video);
+    }
+
+    let statusEl = document.getElementById('universal-scan-status');
+    if (!statusEl) {
+      statusEl = document.createElement('div');
+      statusEl.id = 'universal-scan-status';
+      statusEl.style.cssText = 'font-size:0.82rem;font-weight:700;color:#2c4d2c;margin-bottom:8px;';
+      video.after(statusEl);
+    }
+
+    try {
+      statusEl.textContent = 'Opening camera...';
+      activeStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false
+      });
+      video.srcObject = activeStream;
+      await video.play();
+      statusEl.textContent = 'Camera ready — point at a worker QR code';
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+      const tick = () => {
+        if (!activeStream) return;
+        if (video.readyState === video.HAVE_ENOUGH_DATA && typeof jsQR === 'function') {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const code = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'dontInvert' });
+
+          if (code && code.data) {
+            const now = Date.now();
+            // Prevent double-scanning the exact same badge within 2 seconds
+            if (code.data !== lastCode || now - lastTime > 2000) {
+              lastCode = code.data;
+              lastTime = now;
+              if (typeof handleScan === 'function' && typeof scanFeedback === 'function') {
+                scanFeedback(handleScan(code.data));
+              }
+            }
+          }
+        }
+        scanFrameId = requestAnimationFrame(tick);
+      };
+      scanFrameId = requestAnimationFrame(tick);
+    } catch (err) {
+      statusEl.style.color = '#a5352c';
+      statusEl.textContent = 'Camera blocked or unavailable. Please allow camera permission in your browser settings, or type the ID below.';
+    }
+  };
+})();
+
+// 2. EDIT WORKER NAMES (Updates both future selections and past labor logs)
+(function() {
+  const NAME_OVERRIDES_KEY = 'utengule_name_overrides_v1';
+  const overrides = JSON.parse(localStorage.getItem(NAME_OVERRIDES_KEY) || '{}');
+
+  function applyNameOverrides() {
+    // Update built-in WORKERS list in memory
+    if (Array.isArray(WORKERS)) {
+      WORKERS.forEach(w => {
+        if (overrides[w[0]]) w[1] = overrides[w[0]];
+      });
+    }
+    // Update extraWorkers if present
+    if (typeof extraWorkers !== 'undefined' && Array.isArray(extraWorkers)) {
+      extraWorkers.forEach(w => {
+        if (Array.isArray(w) && overrides[w[0]]) w[1] = overrides[w[0]];
+        else if (w && w.id && overrides[w.id]) w.name = overrides[w.id];
+      });
+    }
+  }
+  applyNameOverrides();
+
+  window.renameWorker = async function(wid) {
+    const current = (typeof workerById === 'function' ? workerById(wid) : null);
+    const oldName = current ? current.name : wid;
+    const newName = prompt(`Edit name for ${wid}:`, oldName);
+    if (!newName || !newName.trim() || newName.trim() === oldName) return;
+
+    const cleanName = newName.trim();
+    overrides[wid] = cleanName;
+    localStorage.setItem(NAME_OVERRIDES_KEY, JSON.stringify(overrides));
+    applyNameOverrides();
+
+    // Also update existing labor records so reports/logs show the corrected name
+    if (typeof records !== 'undefined' && Array.isArray(records)) {
+      let changed = false;
+      records.forEach(r => {
+        if (r.wid === wid) {
+          r.name = cleanName;
+          changed = true;
+        }
+      });
+      if (changed && typeof saveRecords === 'function') {
+        await saveRecords();
+      }
+    }
+    if (typeof render === 'function') render();
+  };
+
+  // Inject an "Edit Name" button into the ID Cards / Badges tab & Log rows
+  const origRender = window.render;
+  if (typeof origRender === 'function') {
+    window.render = function() {
+      origRender.apply(this, arguments);
+      applyNameOverrides();
+
+      // Add "Edit Name" button on every ID card / QR sticker in the Badges tab
+      document.querySelectorAll('.id-card, .qr-sticker').forEach(card => {
+        if (card.querySelector('.edit-name-btn')) return;
+        const idEl = card.querySelector('.idc-id, .qs-t b');
+        if (!idEl) return;
+        const wid = idEl.textContent.trim();
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'edit-name-btn no-print';
+        btn.textContent = '✏️ Edit Name';
+        btn.style.cssText = 'margin-top:4px;font-size:10px;padding:2px 6px;border:1px solid #4a3221;background:#f6f1e6;color:#4a3221;border-radius:4px;cursor:pointer;font-weight:700;';
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          window.renameWorker(wid);
+        };
+        const target = card.querySelector('.idc-info, .qs-t');
+        if (target) target.appendChild(btn);
+      });
+    };
+  }
+})();
 </script>
+
 </body>
 </html>
